@@ -1,6 +1,6 @@
 # Quadratic-program bounds for partial traces
 
-This code accompanies the paper and serves two purposes:
+This code accompanies the paper [arXiv:2601.14158](https://arxiv.org/abs/2601.14158) and serves two purposes:
 
 1. reproduce its numerical computations;
 2. compute bounds for arbitrary spectra of equal bipartite systems.
@@ -22,7 +22,8 @@ For density-matrix entropy calculations, use
 ## Automatic plateau selection
 
 The spectrum must contain exactly `d**2` entries for an integer `d >= 3`.
-The code infers `d` and generates the following plateau starts:
+The code sorts it in decreasing order, infers `d`, and generates the following
+plateau starts:
 
 | Dimension | Plateau starts | Plateau length |
 |---|---:|---:|
@@ -31,11 +32,13 @@ The code infers `d` and generates the following plateau starts:
 | `d = 5` | 3, 4 | 20 |
 | `d >= 6` | 4 | `d**2 - 6` |
 
-The result label `mu_k` means that the constant plateau begins at entry `k`
-with one-based mathematical indexing.
+The subscript records the plateau start: `mu_I`, `mu_II`, `mu_III`, and
+`mu_IV` have plateaus beginning at entries 1, 2, 3, and 4, respectively.
+Only the dimension-appropriate names are returned.
 
 The notebook `Partial_trace_QPs.ipynb` reproduces the plots and demonstrates both a
-small-dimensional family and the automatic higher-dimensional calculation.
+small-dimensional family and the automatic higher-dimensional calculation. Running
+it also refreshes publication-ready PDF and PNG plots in the `figures` directory.
 
 ## Requirements
 

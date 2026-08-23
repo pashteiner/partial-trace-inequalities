@@ -52,8 +52,10 @@ def plateau_patterns(d: int) -> dict[str, tuple[int, ...]]:
         else [(3, 3)]
     )
     n = d * d
+    # The subscript records the one-based position where the plateau starts.
+    mu_names = ["I", "II", "III", "IV"]
     return {
-        f"mu_{before + 1}": (1,) * before
+        f"mu_{mu_names[before]}": (1,) * before
         + (n - before - after,)
         + (1,) * after
         for before, after in pairs
@@ -79,9 +81,20 @@ def solve_majorizer(
     """
 
     lam = np.sort(np.asarray(lambda_spectrum, dtype=float).reshape(-1))[::-1]
+    if not lam.size or not np.all(np.isfinite(lam)):
+        raise ValueError("The spectrum must be a nonempty finite vector.")
     mult = tuple(int(m) for m in multiplicities)
     if any(m <= 0 for m in mult) or sum(mult) != lam.size:
-        raise ValueError("Multiplicities must be positive and sum to the spectrum size.")
+        raise ValueError(
+            "Multiplicities must be positive and sum to the spectrum size."
+        )
+
+    # The problem is homogeneous. Normalizing its scale makes the optimizer's
+    # absolute tolerances independent of the units used for the spectrum.
+    scale = float(np.max(np.abs(lam)))
+    if scale == 0.0:
+        scale = 1.0
+    lam = lam / scale
 
     groups = np.repeat(np.arange(len(mult)), mult)
     expansion = np.eye(len(mult))[groups]
@@ -130,22 +143,48 @@ def solve_majorizer(
         options={"ftol": 1e-12, "maxiter": 2_000},
     )
 
-    reduced = np.asarray(result.x)
-    mu = _expand(reduced, mult)
+    reduced_scaled = np.asarray(result.x)
+    mu_scaled = _expand(reduced_scaled, mult)
     # Majorization includes the prefix inequalities and equality of total sums.
     prefix_error = max(
         0.0,
-        float(-np.min(np.cumsum(mu)[:-1] - np.cumsum(lam)[:-1], initial=0.0)),
+        float(
+            -np.min(
+                np.cumsum(mu_scaled)[:-1] - np.cumsum(lam)[:-1],
+                initial=0.0,
+            )
+        ),
     )
-    majorization_error = max(prefix_error, abs(float(mu.sum() - lam.sum())))
-    order_error = max(0.0, float(np.max(np.diff(mu), initial=0.0)))
+    majorization_error = max(
+        prefix_error, abs(float(mu_scaled.sum() - lam.sum()))
+    )
+    order_error = max(0.0, float(np.max(np.diff(mu_scaled), initial=0.0)))
     positivity_error = (
-        max(0.0, float(-np.min(mu, initial=0.0))) if nonnegative else 0.0
+        max(0.0, float(-np.min(mu_scaled, initial=0.0)))
+        if nonnegative
+        else 0.0
     )
-    if not result.success or max(
-        majorization_error, order_error, positivity_error
-    ) > tolerance:
+    error = max(majorization_error, order_error, positivity_error)
+    certified = result.success
+    if error <= tolerance and not certified:
+        # SLSQP sometimes rejects a feasible optimum during its line search.
+        # For a convex problem, the first-order condition is another small LP.
+        gradient = 2.0 * weights * reduced_scaled
+        check = linprog(
+            gradient,
+            A_ub=-A,
+            b_ub=-b,
+            A_eq=weights[None, :],
+            b_eq=[trace],
+            bounds=bounds,
+            method="highs",
+        )
+        gap = float(gradient @ reduced_scaled - check.fun) if check.success else np.inf
+        certified = gap <= tolerance * max(1.0, abs(objective(reduced_scaled)))
+    if error > tolerance or not certified:
         raise RuntimeError(f"QP failed validation: {result.message}.")
+    reduced = reduced_scaled * scale
+    mu = mu_scaled * scale
     return QPResult(reduced, mu, mult, objective(reduced))
 
 
@@ -171,7 +210,7 @@ def solve_spectrum(
 
 
 def joint_partial_trace_spectrum(mu: Sequence[float]) -> np.ndarray:
-    """Spectrum of both partial traces of diag(mu), in decreasing order."""
+    """Both partial-trace spectra of ``diag(mu^downarrow)``, decreasingly sorted."""
 
     values, d = _spectrum(mu)
     grid = values.reshape(d, d)
@@ -181,8 +220,8 @@ def joint_partial_trace_spectrum(mu: Sequence[float]) -> np.ndarray:
 def schatten_power_bound(mu: Sequence[float], p: float) -> float:
     r"""Return ``||tr_1 C||_p^p + ||tr_2 C||_p^p`` from a majorizer."""
 
-    if p < 1:
-        raise ValueError("p must be at least 1.")
+    if not np.isfinite(p) or p < 1:
+        raise ValueError("p must be finite and at least 1.")
     return float(np.sum(np.abs(joint_partial_trace_spectrum(mu)) ** p))
 
 
@@ -201,23 +240,38 @@ def reference_p_bounds(lambda_spectrum: Sequence[float], p: float) -> dict[str, 
     lam, d = _spectrum(lambda_spectrum)
     if lam.min() < -1e-10 or not np.isclose(lam.sum(), 1.0, atol=1e-9):
         raise ValueError("Reference comparisons require a density spectrum.")
-    if p < 1:
-        raise ValueError("p must be at least 1.")
-    power = float(np.sum(lam**p))
+    if not np.isfinite(p) or p < 1:
+        raise ValueError("p must be finite and at least 1.")
+    power = float(np.sum(np.clip(lam, 0.0, None) ** p))
     return {"Audenaert": 1.0 + power, "Rastegin": 2.0 * d ** (p - 1) * power}
 
 
 def renyi_lower_bound(
     lambda_spectrum: Sequence[float], mu: Sequence[float], alpha: float
 ) -> float:
-    r"""Lower bound for ``S_a(rho_A)+S_a(rho_B)-S_a(rho_AB)``."""
+    r"""Evaluate the Renyi bound using a nonnegative candidate from the solver."""
 
-    lam, _ = _spectrum(lambda_spectrum)
-    candidate, _ = _spectrum(mu)
-    if alpha <= 1 or lam.min() < -1e-10 or candidate.min() < -1e-10:
+    lam, d_lam = _spectrum(lambda_spectrum)
+    candidate, d_candidate = _spectrum(mu)
+    if d_lam != d_candidate:
+        raise ValueError("lambda and mu must describe systems of the same dimension.")
+    if (
+        not np.isfinite(alpha)
+        or alpha <= 1
+        or lam.min() < -1e-10
+        or candidate.min() < -1e-10
+    ):
         raise ValueError("The Renyi bound requires alpha > 1 and nonnegative spectra.")
-    joint_power = np.sum(joint_partial_trace_spectrum(candidate) ** alpha)
-    input_power = np.sum(lam**alpha)
+    if not np.isclose(lam.sum(), 1.0, atol=1e-9):
+        raise ValueError("The Renyi bound requires a trace-one input spectrum.")
+    if not np.isclose(candidate.sum(), lam.sum(), atol=1e-8) or np.any(
+        np.cumsum(candidate)[:-1] < np.cumsum(lam)[:-1] - 1e-8
+    ):
+        raise ValueError("mu must majorize lambda.")
+    joint_power = np.sum(
+        np.clip(joint_partial_trace_spectrum(candidate), 0.0, None) ** alpha
+    )
+    input_power = np.sum(np.clip(lam, 0.0, None) ** alpha)
     return float(np.log(joint_power / input_power) / (1.0 - alpha))
 
 
