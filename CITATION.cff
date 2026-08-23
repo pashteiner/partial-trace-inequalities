@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "Quadratic-program bounds for partial traces"
+version: 1.0.0
+type: software
+authors:
+  - family-names: "Costa Rico"
+    given-names: "Pablo"
+  - family-names: "Shteyner"
+    given-names: "Pavel"
+date-released: 2026-08-23
+abstract: >-
+  Python implementation of the quadratic programs accompanying the paper
+  "Sharp Inequalities for Schur-Convex Functionals of Partial Traces over
+  Unitary Orbits". The code reproduces the numerical computations in the
+  paper and computes bounds for arbitrary spectra of equal bipartite systems.
+repository-code: "https://github.com/pashteiner/partial-trace-inequalities"
+keywords:
+  - "partial trace"
+  - "majorization"
+  - "Schur-convex functions"
+  - "quadratic programming"
+  - "quantum information"
